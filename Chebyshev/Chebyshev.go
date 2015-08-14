@@ -2,9 +2,23 @@ package main
 
 import (
 	"fmt"
-	"unicode"
 	"github.com/atotto/clipboard"
+	"io"
+	"os"
+	"unicode"
+	"log"
 )
+
+import (
+	"image"
+	_ "image/gif"
+	"image/png"
+	"net/http"
+	"net/url"
+	"io/ioutil"
+)
+
+var _ = png.Encode
 
 // 정수 계수 다항식
 // 첫번째 원소는 상수항을 나타낸다. 차수는 순차적으로 증가한다.
@@ -21,7 +35,7 @@ func maxint(x, y int) int {
 func Add(x, y Po) Po {
 	z := make(Po, maxint(len(x), len(y)))
 	copy(z, x)
-	
+
 	for i, r := range y {
 		z[i] += r
 	}
@@ -33,17 +47,17 @@ func Add(x, y Po) Po {
 func Sub(x, y Po) Po {
 	z := make(Po, maxint(len(x), len(y)))
 	copy(z, x)
-	
+
 	for i, r := range y {
 		z[i] -= r
 	}
 
-	return z	
+	return z
 }
 
-// Shift 는 모든 차수를 증가시킨다. 
+// Shift 는 모든 차수를 증가시킨다.
 func Shift(x Po, n int) Po {
-	z := make(Po, len(x) + n)
+	z := make(Po, len(x)+n)
 	copy(z[n:], x)
 
 	return z
@@ -113,15 +127,106 @@ func CosN(n int) Po {
 		return z
 	}
 
-	z := Shift(CosN(n - 1), 1)
+	z := Shift(CosN(n-1), 1)
 	for i := range z {
 		z[i] *= 2
 	}
 
-	z = Sub(z, CosN(n - 2))
+	z = Sub(z, CosN(n-2))
 	cacheCosN[n] = z
 
 	return z
+}
+
+func RenderStringAsURL(str string) (string, error) {
+	v := make(url.Values)
+	v.Set("val", str)
+
+	u, _ := url.Parse("http://www.numberempire.com/texequationeditor/get_tex_image_url.php")
+	u.RawQuery = v.Encode()
+
+	resp, err := http.Get(u.String())
+	if err != nil {
+		return "", err
+	}
+
+	url, err := ioutil.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return "", err
+	}
+
+	return string(url), nil
+}
+
+func RenderString(str string) (image.Image, error) {
+	url, err := RenderStringAsURL(str)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+
+	m, _, err := image.Decode(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	return m, nil
+}
+
+func minint(x, y int) int {
+	if x > y {
+		return y
+	}
+	return x
+}
+
+func LatexPo(z Po, n, sep int) string {
+	var w byteWriter
+
+	io.WriteString(&w, `\begin{align}`)
+	fmt.Fprintf(&w, `\cos(%dx) = `, n)
+
+	var arrange [][2]int
+
+	for r := len(z) - 1; r >= 0; r-- {
+		x := z[r]
+		if x != 0 {
+			arrange = append(
+				arrange,
+				[2]int{r, x},
+			)
+		}
+	}
+
+	for i := 0; i < len(arrange); i += sep {
+		io.WriteString(&w, "&")
+		for _, term := range arrange[i:minint(i+sep, len(arrange))] {
+			r, x := term[0], term[1]
+			if r > 0 {
+				switch r {
+				case 1:
+					fmt.Fprintf(&w, "+cos^{%d}(x)", r)
+				case -1:
+					fmt.Fprintf(&w, "-cos^{%d}(x)", r)
+				default:
+					fmt.Fprintf(&w, "%+dcos^{%d}(x)", x, r)
+				}
+			} else {
+				fmt.Fprintf(&w, "%+d", x)
+			}
+		}
+		io.WriteString(&w, "\\\\\n")
+	}
+
+	io.WriteString(&w, `\end{align}`)
+
+	return string(w)
 }
 
 func want() bool {
@@ -130,7 +235,7 @@ func want() bool {
 	return unicode.ToLower(cp) == 'y'
 }
 
-func main() {
+func test2() {
 	var n int
 
 	fmt.Print("cos(nx) where n = ")
@@ -141,8 +246,35 @@ func main() {
 	fmt.Println("cos(nx) is:")
 	fmt.Println(z)
 
-	fmt.Print("do you want to copy latex of cos(nx) into clipboard? (y or n): ")
-	if want() {
-		clipboard.WriteAll(Latex(z))
+	url, err := RenderStringAsURL(LatexPo(z, n, 4))
+	if err == nil {
+		fmt.Print("do you want to copy latex address into clipboard? (y or n): ")
+		if want() {
+			clipboard.WriteAll(url)
+		}
+	} else {
+		fmt.Println(err)
+	}
+
+}
+
+func main() {
+	for i := 1; i <= 100; i++ {
+		z := CosN(i)
+		im, err := RenderString(LatexPo(z, i, 4))
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		w, err := os.Create(fmt.Sprintf("cos(%dx).png", i))
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		if err := png.Encode(w, im); err != nil {
+			log.Fatal(err)
+		}
+
+		fmt.Printf("Done cos(%dx)\n", i)
 	}
 }
